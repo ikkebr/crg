@@ -1,411 +1,445 @@
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Header, Footer, Static, Label
-from textual.reactive import reactive
+from textual.containers import Container, Horizontal, Vertical
+from textual.screen import Screen
+from textual.widgets import Button, Footer, Static
 from textual.binding import Binding
+from rich.syntax import Syntax
 from rich.panel import Panel
-from rich.text import Text
+import random
+from snippets import CODE_SNIPPETS
 
+from rich.console import RenderableType
+from textual.widgets import Static
+from rich.syntax import Syntax
+from rich.panel import Panel
 
-class SelectableCodeLine(Static):
-    """A selectable line of code with line number."""
+class CodeDisplay(Static):
+    """A Static widget that displays syntax-highlighted code with selectable lines."""
     
-    def __init__(self, line_number: int, content: str, language: str) -> None:
-        super().__init__()
-        self.line_number = line_number
-        self.content = content
+    def __init__(
+        self, 
+        code: str = "", 
+        language: str = "python",
+        *args, 
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.code = code
         self.language = language
-        self.is_selected = False
-        self.update_display()
+        self.selected_lines = set()
+        self.update_content()
     
-    def update_display(self) -> None:
-        """Update display to reflect selection state."""
-        # Create text with line number
-        line_text = Text(f"{self.line_number:3} | {self.content}")
+    def update_content(self) -> None:
+        """Update the displayed content with current code and selected lines."""
+        syntax = Syntax(
+            self.code,
+            self.language,
+            line_numbers=True,
+            theme="monokai",
+            word_wrap=False,
+            highlight_lines=self.selected_lines
+        )
+        self.update(Panel(syntax))
+    
+    def on_click(self, event) -> None:
+        """Handle click events on the widget."""
+        # Get the relative position within the widget
+        relative_y = event.y
         
-        # Apply selection styling if needed
-        if self.is_selected:
-            self.add_class("selected")
-            self.remove_class("not-selected")
-        else:
-            self.add_class("not-selected") 
-            self.remove_class("selected")
+        # Calculate which line was clicked (simple approach)
+        # We need to account for potential offsets from borders, padding, etc.
+        # This offset may need to be adjusted based on exact rendering details
+        offset = 1  # Adjust this based on your layout
+        
+        line_number = relative_y + offset
+        line_count = len(self.code.splitlines())
+        
+        if 1 <= line_number <= line_count:
+            # Toggle the line selection
+            if line_number in self.selected_lines:
+                self.selected_lines.remove(line_number)
+            else:
+                self.selected_lines.add(line_number)
             
-        self.update(line_text)
-    
-    def on_click(self) -> None:
-        """Handle click on this line."""
-        self.is_selected = not self.is_selected
-        self.update_display()
-        self.app.toggle_line_selection(self.line_number)
-    
+            # Update the display
+            self.update_content()
 
-class CodeReviewer(App):
-    """The Code Reviewer game application."""
+
+
+
+class SelectableCodeView(Static):
+    """A widget that displays code with selectable lines."""
+    
+    def __init__(self, code, language):
+        super().__init__("")
+        self.code = code
+        self.language = language
+        self.selected_lines = set()
+        self.line_count = len(code.splitlines()) if code else 0
+        self.update_content()
+
+    def update_content(self):
+        """Update the displayed code with highlighted selected lines."""
+        self.line_count = len(self.code.splitlines()) if self.code else 0
+        
+        syntax = Syntax(
+            self.code,
+            self.language,
+            line_numbers=True,
+            theme="monokai",
+            word_wrap=False,
+            highlight_lines=self.selected_lines
+        )
+        self.update(Panel(syntax))
+
+    def on_mouse_up(self, event):
+        """Handle mouse events to select/deselect lines."""
+        # Only process clicks in the code container
+        code_container = self.query_one("#code-container")
+        
+        # Get the region of the code container
+        container_region = code_container.region
+        
+        # Check if click is within the container bounds
+        if (container_region.x <= event.screen_x < container_region.x + container_region.width and
+            container_region.y <= event.screen_y < container_region.y + container_region.height):
+            
+            # Get relative position within the code container (account for panel borders)
+            relative_y = event.screen_y - container_region.y - 1  # -1 for the panel border
+            
+            # Calculate which line was clicked
+            line_number = relative_y + 1  # +1 because line numbers start from 1
+            
+            # Get the current snippet code
+            if hasattr(self, 'current_snippet_data'):
+                line_count = len(self.current_snippet_data["code"].splitlines())
+                
+                if 1 <= line_number <= line_count:
+                    # Toggle line selection
+                    if line_number in self.selected_lines:
+                        self.selected_lines.remove(line_number)
+                    else:
+                        self.selected_lines.add(line_number)
+                    
+                    # Redraw the code with highlighted lines
+                    syntax = Syntax(
+                        self.current_snippet_data["code"],
+                        self.current_snippet_data["language"],
+                        line_numbers=True,
+                        theme="monokai",
+                        word_wrap=False,
+                        highlight_lines=self.selected_lines
+                    )
+                    code_container.update(Panel(syntax))
+
+
+
+class TitleScreen(Screen):
+    """The game's title screen."""
+    
+    BINDINGS = [
+        Binding("space", "start_game", "Start Game"),
+    ]
+    
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Static("[bold yellow]THE CODE REVIEWER[/bold yellow]", id="title"),
+            Static("[green]You are a code reviewer at MegaCorp Inc.[/green]", id="subtitle"),
+            Static("[green]Find security issues and approve or reject code.[/green]"),
+            Static("[white]Press SPACE to start[/white]", id="press-key"),
+            id="title-screen"
+        )
+    
+    def action_start_game(self):
+        """Start the game when space is pressed."""
+        self.app.start_new_game()
+
+
+class GameScreen(Screen):
+    """The main game screen."""
+    
+    def __init__(self):
+        super().__init__()
+        self.reset_game()
+    
+    def reset_game(self):
+        """Reset the game to initial state."""
+        self.current_snippet = 0
+        self.correct_answers = 0
+        self.total_snippets = 5
+        self.snippets = random.sample(CODE_SNIPPETS, self.total_snippets)
+        self.code_display = None
+        
+        # If we're already mounted, update the UI elements
+        if self.is_mounted:
+            self.query_one("#progress").update(f"[bold]Snippets: 1/{self.total_snippets}[/bold]")
+            self.query_one("#score").update(f"[bold]Score: 0[/bold]")
+            self.code_display = self.query_one(CodeDisplay)
+            self.load_snippet()
+    
+    def compose(self) -> ComposeResult:
+        """Create the game UI."""
+        yield Static("[bold white on blue] THE CODE REVIEWER v1.0 [/bold white on blue]", id="game-header")
+        
+        # Action panel
+        yield Horizontal(
+            Vertical(
+                Static("[reverse]ACTIONS[/reverse]", id="control-title"),
+                Button("LGTM", variant="success", id="lgtm-button"),
+                Button("REJECT", variant="error", id="reject-button"),
+                Static(f"[bold]Snippets: 1/{self.total_snippets}[/bold]", id="progress"),
+                Static(f"[bold]Score: 0[/bold]", id="score"),
+                id="control-panel"
+            ),
+            Vertical(
+                Static("[reverse]CODE SNIPPET - CLICK ON LINES WITH ISSUES[/reverse]", id="code-title"),
+                CodeDisplay(id="code-display"),  # Our custom widget
+                id="code-panel"
+            ),
+            id="game-container"
+        )
+        
+        yield Static("[white on blue]F1: Help  ESC: Quit[/white on blue]", id="status-bar")
+    
+    def on_mount(self):
+        """When the screen is mounted, initialize the first snippet."""
+        self.code_display = self.query_one(CodeDisplay)
+        self.load_snippet()
+    
+    def load_snippet(self):
+        """Update with current snippet content."""
+        if self.current_snippet < self.total_snippets:
+            snippet = self.snippets[self.current_snippet]
+            
+            # Update the code display
+            self.code_display.code = snippet["code"]
+            self.code_display.language = snippet["language"]
+            self.code_display.selected_lines = set()  # Clear selections
+            self.code_display.update_content()
+            
+            # Update progress display
+            self.query_one("#progress").update(f"[bold]Snippets: {self.current_snippet+1}/{self.total_snippets}[/bold]")
+        else:
+            # All snippets done, show results
+            results_screen = self.app.get_screen("results")
+            results_screen.score = self.correct_answers
+            results_screen.total = self.total_snippets
+            self.app.push_screen("results")
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses (LGTM or REJECT)."""
+        if self.current_snippet < self.total_snippets:
+            snippet = self.snippets[self.current_snippet]
+            button_id = event.button.id
+            decision = button_id == "lgtm-button"  # True if LGTM, False if REJECT
+            
+            # Check if the decision is correct
+            correct_decision = (not snippet["should_reject"]) == decision
+            
+            # Check if the selected lines are correct
+            correct_lines = False
+            if snippet["should_reject"]:
+                if self.code_display.selected_lines == set(snippet["issue_lines"]):
+                    correct_lines = True
+            else:
+                if not self.code_display.selected_lines:  # No lines should be selected for good code
+                    correct_lines = True
+            
+            # Update score
+            if correct_decision and correct_lines:
+                self.correct_answers += 1
+                self.query_one("#score").update(f"[bold]Score: {self.correct_answers}[/bold]")
+                self.notify("[green]Correct![/green]")
+            else:
+                self.notify("[red]Incorrect![/red] " + snippet["explanation"])
+            
+            # Move to next snippet
+            self.current_snippet += 1
+            self.load_snippet()
+
+
+
+class ResultsScreen(Screen):
+    """Screen to display game results."""
+    
+    BINDINGS = [
+        Binding("enter", "continue", "Continue"),
+    ]
+    
+    def __init__(self):
+        super().__init__()
+        self.score = 0
+        self.total = 5
+    
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Static("[bold yellow]RESULTS[/bold yellow]", id="results-title"),
+            Static("", id="results-content"),
+            Static("[white]Press ENTER to continue[/white]", id="press-enter"),
+            id="results-screen"
+        )
+    
+    def on_mount(self):
+        """Update the results content when screen is mounted."""
+        percentage = (self.score / self.total) * 100
+        
+        result_message = f"[bold]You scored {self.score} out of {self.total}[/bold]\n\n"
+        result_message += f"Accuracy: {percentage:.0f}%\n\n"
+        
+        if percentage >= 80:
+            result_message += "[green]Excellent! You're a security expert![/green]"
+        elif percentage >= 60:
+            result_message += "[yellow]Good job! Keep practicing.[/yellow]"
+        else:
+            result_message += "[red]You need more practice with security issues.[/red]"
+        
+        self.query_one("#results-content").update(result_message)
+    
+    def action_continue(self):
+        """Continue to credits screen."""
+        self.app.push_screen("credits")
+
+
+class CreditsScreen(Screen):
+    """Screen to display game credits."""
+    
+    BINDINGS = [
+        Binding("enter", "back_to_title", "Back to Title"),
+    ]
+    
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Static("[bold yellow]CREDITS[/bold yellow]", id="credits-title"),
+            Static("[green]THE CODE REVIEWER[/green]"),
+            Static("A game about finding security issues in code"),
+            Static("Created with Python and Textual"),
+            Static("\n[white]Press ENTER to return to title screen[/white]"),
+            id="credits-screen"
+        )
+    
+    def action_back_to_title(self):
+        """Return to title screen."""
+        # Reset the game screen before returning to title
+        game_screen = self.app.get_screen("game")
+        game_screen.reset_game()
+        self.app.switch_screen("title")
+
+
+
+class CodeReviewerApp(App):
+    """The main application class."""
+    
+    TITLE = "The Code Reviewer"
+    CSS_PATH = None
+    SCREENS = {
+        "title": TitleScreen,
+        "game": GameScreen,
+        "results": ResultsScreen,
+        "credits": CreditsScreen
+    }
     
     CSS = """
     Screen {
-        background: #0c0c1f;
-        color: #cccccc;
-    }
-    
-    #sidebar {
-        dock: left;
-        width: 20;
         background: #000080;
-        color: #ffffff;
-        border: solid #ffffff;
-        padding: 1;
     }
     
-    #content {
-        margin-left: 1;
+    #title-screen, #results-screen, #credits-screen {
+        align: center middle;
+    }
+    
+    #title, #results-title, #credits-title {
+        width: 100%;
+        text-align: center;
+        margin-bottom: 1;
+        color: #FFFF00;
+        
+    }
+    
+    #subtitle, #press-key, #press-enter {
+        width: 100%;
+        text-align: center;
+        margin-top: 1;
+    }
+    
+    #results-content {
+        width: 60;
+        height: auto;
+        margin: 2 0;
+        text-align: center;
+    }
+    
+    #game-header, #status-bar {
+        width: 100%;
+        height: 1;
+        color: #FFFFFF;
+        background: #0000AA;
+    }
+    
+    #status-bar {
+        dock: bottom;
+    }
+    
+    #game-container {
         height: 100%;
     }
     
-    .code-line {
-        height: 1;
-        width: 100%;
-        padding: 0;
+    #control-panel {
+        width: 20;
+        background: #000080;
+        color: #FFFFFF;
+        padding: 1;
     }
     
-    .code-line:hover {
-        background: #333355;
+    #code-panel {
+        width: 1fr;
+        background: #000000;
+        color: #FFFFFF;
     }
     
-    .selected {
-        background: #aa0000;
+    #control-title, #code-title {
+        background: #FFFFFF;
+        color: #000000;
+        text-align: center;
+        margin-bottom: 1;
     }
     
-    .not-selected {
-        background: transparent;
-    }
-    
-    #code-display {
-        height: auto;
+    #code-view {
+        padding: 0 1;
+        height: 1fr;
         overflow: auto;
     }
     
     Button {
         width: 100%;
         margin: 1 0;
-        background: #0000aa;
-        color: #ffffff;
     }
     
-    Button:hover {
-        background: #0000ff;
+    #lgtm-button {
+        background: #00AA00;
+        color: #FFFFFF;
     }
     
-    #title {
+    #reject-button {
+        background: #AA0000;
+        color: #FFFFFF;
+    }
+    
+    #progress, #score {
+        margin-top: 2;
         text-align: center;
-        background: #000088;
-        color: #ffffff;
-        padding: 1;
-    }
-    
-    #status-bar {
-        background: #000080;
-        color: #ffffff;
-        height: 1;
-    }
-    
-    #message-display {
-        height: auto;
-        margin-bottom: 1;
     }
     """
     
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("h", "help", "Help"),
-        Binding("a", "approve", "Approve (LGTM)"),
-        Binding("r", "reject", "Reject"),
-    ]
+    def on_mount(self):
+        """Start with the title screen."""
+        self.push_screen("title")
     
-    current_snippet_index = reactive(0)
-    score = reactive(0)
-    selected_lines = reactive(set())
-    
-    SNIPPETS = [
-        {
-            "code": """def authenticate(username, password):
-    # Get user from database
-    user = db.get_user(username)
-    
-    # Check if password matches
-    if user.password == password:
-        session['user_id'] = user.id
-        return True
-    return False""",
-            "language": "python",
-            "vulnerable_lines": [6],
-            "should_reject": True,
-            "vulnerability_details": "Plain text password comparison instead of using a secure hash comparison"
-        },
-        {
-            "code": """function processUserInput(input) {
-    // Sanitize input
-    const sanitized = input.replace(/[<>]/g, '');
-    
-    // Execute SQL query
-    const query = `SELECT * FROM users WHERE name='${sanitized}'`;
-    db.execute(query);
-    
-    return "Input processed";
-}""",
-            "language": "javascript",
-            "vulnerable_lines": [5, 6],
-            "should_reject": True,
-            "vulnerability_details": "SQL Injection vulnerability - improper sanitization"
-        },
-        {
-            "code": """public string LoadFile(string filename) {
-    // Check if file exists
-    if (!File.Exists(filename)) {
-        return "File not found";
-    }
-    
-    // Read the file content
-    string content = File.ReadAllText(Path.GetFileName(filename));
-    return content;
-}""",
-            "language": "csharp",
-            "vulnerable_lines": [7],
-            "should_reject": True,
-            "vulnerability_details": "Path traversal vulnerability: using GetFileName without validating path"
-        }
-    ]
-    
-    def compose(self) -> ComposeResult:
-        """Create child widgets for the app."""
-        yield Header(show_clock=True)
-        yield Horizontal(
-            Vertical(
-                Label("THE CODE REVIEWER", id="title"),
-                Button("LGTM (Approve)", id="approve"),
-                Button("Reject", id="reject"),
-                Button("Help", id="help"),
-                Button("Quit", id="quit"),
-                id="sidebar"
-            ),
-            Vertical(
-                Static(id="message-display"),
-                Vertical(id="code-display"),
-                id="content"
-            )
-        )
-        yield Static("Score: 0 | Snippet: 1/" + str(len(self.SNIPPETS)), id="status-bar")
-        yield Footer()
-    
-    def on_mount(self) -> None:
-        """Event handler called when app is mounted."""
-        self.show_instructions()
-        self.load_current_snippet()
-    
-    def toggle_line_selection(self, line_number: int) -> None:
-        """Toggle a line's selection state."""
-        if line_number in self.selected_lines:
-            self.selected_lines.remove(line_number)
-        else:
-            self.selected_lines.add(line_number)
-    
-    def load_current_snippet(self) -> None:
-        """Load and display the current code snippet."""
-        snippet = self.SNIPPETS[self.current_snippet_index]
-        code_display = self.query_one("#code-display")
-        
-        # Clear current content
-        code_display.remove_children()
-        self.selected_lines.clear()
-        
-        # Split the code into lines
-        lines = snippet["code"].split("\n")
-        
-        # Add each line as a selectable widget
-        for i, line in enumerate(lines, 1):
-            code_line = SelectableCodeLine(i, line, snippet["language"])
-            code_line.add_class("code-line")
-            code_line.add_class("not-selected")
-            code_display.mount(code_line)
-        
-        # Update status bar
-        status = f"Score: {self.score} | Snippet: {self.current_snippet_index + 1}/{len(self.SNIPPETS)}"
-        self.query_one("#status-bar").update(status)
-        
-        # Display instructions for this snippet
-        message = f"Review this code for security vulnerabilities.\nClick on vulnerable lines, then approve or reject."
-        self.query_one("#message-display").update(Panel(message, title=f"Code Snippet ({snippet['language']})", border_style="blue"))
-    
-    def show_instructions(self) -> None:
-        """Show initial instructions."""
-        instructions = """
-        Welcome to 'The Code Reviewer'!
-
-        You are a security code reviewer at BigCorp Inc.
-        Your job is to identify security vulnerabilities in code.
-
-        HOW TO PLAY:
-        1. Click on lines that contain security vulnerabilities
-        2. Click "Reject" if the code has vulnerabilities
-        3. Click "LGTM" (Looks Good To Me) if the code is secure
-
-        Press 'H' for help at any time.
-        """
-        message_display = self.query_one("#message-display")
-        message_display.update(Panel(instructions, title="Instructions", border_style="green"))
-    
-    def action_quit(self) -> None:
-        """Quit the application."""
-        self.exit()
-    
-    def action_help(self) -> None:
-        """Show help information."""
-        self.show_help()
-    
-    def action_approve(self) -> None:
-        """Approve the current code snippet."""
-        self.process_decision(approve=True)
-    
-    def action_reject(self) -> None:
-        """Reject the current code snippet."""
-        self.process_decision(approve=False)
-    
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Event handler for button presses."""
-        button_id = event.button.id
-        
-        if button_id == "quit":
-            self.exit()
-        elif button_id == "help":
-            self.show_help()
-        elif button_id == "approve":
-            self.process_decision(approve=True)
-        elif button_id == "reject":
-            self.process_decision(approve=False)
-    
-    def show_help(self) -> None:
-        """Show help information."""
-        help_text = """
-        THE CODE REVIEWER - HELP
-        
-        You are a code reviewer at BigCorp Inc.
-        Your job is to identify security vulnerabilities in code.
-        
-        1. Review the code snippet carefully
-        2. Click on lines with security vulnerabilities
-        3. Click "Reject" if the code has vulnerabilities
-        4. Click "LGTM" if the code looks secure
-        
-        Keyboard shortcuts:
-        - H: Show this help
-        - A: Approve (LGTM)
-        - R: Reject
-        - Q: Quit
-        
-        Earn points for correct decisions!
-        """
-        message_display = self.query_one("#message-display")
-        message_display.update(Panel(help_text, title="Help", border_style="yellow"))
-    
-    def process_decision(self, approve: bool) -> None:
-        """Process the player's decision to approve or reject."""
-        snippet = self.SNIPPETS[self.current_snippet_index]
-        
-        # Check if the player identified the correct vulnerable lines
-        correct_lines_identified = all(line in self.selected_lines for line in snippet["vulnerable_lines"])
-        no_false_positives = len(self.selected_lines) == len(snippet["vulnerable_lines"])
-        
-        # Check if the decision (approve/reject) was correct
-        correct_decision = (approve != snippet["should_reject"])
-        
-        # Calculate score
-        points = 0
-        if correct_decision and correct_lines_identified and no_false_positives:
-            points = 100  # Perfect score
-        elif correct_decision:
-            points = 50   # Correct decision but wrong lines
-        elif correct_lines_identified and no_false_positives:
-            points = 30   # Identified vulnerabilities but made wrong decision
-        
-        self.score += points
-        
-        # Prepare result message
-        if correct_decision and correct_lines_identified and no_false_positives:
-            result = "Perfect! You made the right decision and identified all vulnerabilities correctly."
-        elif correct_decision and not snippet["should_reject"]:
-            result = "Correct! This code was clean and you approved it."
-        elif correct_decision and snippet["should_reject"]:
-            if not correct_lines_identified:
-                result = "Partially correct. You rejected the code, but didn't identify all vulnerabilities correctly."
-            else:
-                result = "Good job! You rejected the code and identified the vulnerabilities."
-        else:
-            if snippet["should_reject"]:
-                result = "Incorrect. This code contained vulnerabilities and should have been rejected."
-            else:
-                result = "Incorrect. This code was clean and should have been approved."
-        
-        # Add vulnerability details if applicable
-        if snippet["should_reject"]:
-            details = f"\n\nVulnerability: {snippet['vulnerability_details']}"
-            vulnerable_lines = ", ".join(str(line) for line in snippet["vulnerable_lines"])
-            details += f"\nVulnerable lines: {vulnerable_lines}"
-        else:
-            details = "\n\nNo vulnerabilities in this code."
-        
-        # Show score
-        score_text = f"\n\nPoints earned: +{points}"
-        total_score = f"Total score: {self.score}"
-        
-        # Update message display
-        message_display = self.query_one("#message-display")
-        message_display.update(Panel(
-            f"{result}{details}{score_text}\n{total_score}", 
-            title="Review Result", 
-            border_style="green" if points > 0 else "red"
-        ))
-        
-        # Move to next snippet if available
-        if self.current_snippet_index < len(self.SNIPPETS) - 1:
-            self.current_snippet_index += 1
-            self.load_current_snippet()
-        else:
-            self.show_game_over()
-    
-    def show_game_over(self) -> None:
-        """Show game over screen."""
-        max_possible_score = len(self.SNIPPETS) * 100
-        performance = (self.score / max_possible_score) * 100
-        
-        if performance >= 90:
-            evaluation = "Outstanding! You're a security expert!"
-        elif performance >= 70:
-            evaluation = "Great job! You have a good security mindset."
-        elif performance >= 50:
-            evaluation = "Good effort! Keep practicing your security skills."
-        else:
-            evaluation = "You need more practice with security code review."
-        
-        game_over_text = f"""
-        GAME OVER!
-        
-        Final Score: {self.score} / {max_possible_score}
-        
-        {evaluation}
-        
-        Thank you for playing The Code Reviewer!
-        Press 'Q' to quit.
-        """
-        
-        message_display = self.query_one("#message-display")
-        message_display.update(Panel(game_over_text, title="Game Over", border_style="blue"))
-        
-        # Clear code display
-        code_display = self.query_one("#code-display")
-        code_display.remove_children()
-
+    def start_new_game(self):
+        """Start a new game by resetting and showing the game screen."""
+        game_screen = self.get_screen("game")
+        game_screen.reset_game()
+        self.push_screen("game")
 
 if __name__ == "__main__":
-    app = CodeReviewer()
+    app = CodeReviewerApp()
     app.run()
